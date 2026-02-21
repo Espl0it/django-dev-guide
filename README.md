@@ -772,3 +772,502 @@ class Meta:
 - [Django REST Framework](https://www.django-rest-framework.org/)
 - [Two-Scoops of Django](https://www.feldroy.com/books/two-scoops-of-django-3-edition)
 - [Django Blog Tutorial](https://developer.mozilla.org/en-US/docs/Learn/Server-side/Django)
+
+---
+
+## 前端框架集成 (Vite + React/Vue)
+
+### 1. 项目结构
+
+```
+myproject/
+├── backend/                 # Django 后端
+│   ├── myproject/
+│   ├── apps/
+│   ├── requirements.txt
+│   └── manage.py
+├── frontend/               # Vite 前端
+│   ├── src/
+│   │   ├── components/
+│   │   ├── pages/
+│   │   ├── api/
+│   │   ├── App.jsx
+│   │   └── main.jsx
+│   ├── public/
+│   ├── index.html
+│   ├── vite.config.js
+│   ├── package.json
+│   └── .env
+├── docker-compose.yml
+├── nginx/
+│   └── default.conf
+└── README.md
+```
+
+### 2. 前端初始化 (Vite + React)
+
+```bash
+# 创建前端目录
+mkdir frontend && cd frontend
+
+# 初始化 Vite + React
+npm create vite@latest . -- --template react
+
+# 安装依赖
+npm install
+
+# 安装额外依赖
+npm install axios react-router-dom zustand @tanstack/react-query
+npm install -D tailwindcss postcss autoprefixer
+```
+
+### 3. Vite 配置
+
+```javascript
+// vite.config.js
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+import path from 'path'
+
+export default defineConfig({
+  plugins: [react()],
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
+  server: {
+    port: 3000,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/admin': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+    },
+  },
+  build: {
+    outDir: '../static/dist',
+    emptyOutDir: true,
+  },
+})
+```
+
+### 4. 环境变量
+
+```bash
+# frontend/.env
+VITE_API_URL=http://localhost:8000
+VITE_WS_URL=ws://localhost:8000
+```
+
+### 5. API 客户端
+
+```javascript
+// src/api/axios.js
+import axios from 'axios'
+
+const api = axios.create({
+  baseURL: import.meta.env.VITE_API_URL || '/api',
+  withCredentials: true,
+})
+
+// 请求拦截器
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+// 响应拦截器
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('token')
+      window.location.href = '/login'
+    }
+    return Promise.reject(error)
+  }
+)
+
+export default api
+```
+
+### 6. React 组件示例
+
+```jsx
+// src/pages/Login.jsx
+import { useState } from 'react'
+import api from '../api/axios'
+
+export default function Login() {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+
+  const handleLogin = async (e) => {
+    e.preventDefault()
+    try {
+      const { data } = await api.post('/auth/login/', { username, password })
+      localStorage.setItem('token', data.access)
+      window.location.href = '/'
+    } catch (error) {
+      alert('登录失败')
+    }
+  }
+
+  return (
+    <form onSubmit={handleLogin}>
+      <input
+        type="text"
+        value={username}
+        onChange={(e) => setUsername(e.target.value)}
+        placeholder="用户名"
+      />
+      <input
+        type="password"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        placeholder="密码"
+      />
+      <button type="submit">登录</button>
+    </form>
+  )
+}
+```
+
+---
+
+## Docker Compose 部署
+
+### 1. Docker 配置
+
+```dockerfile
+# backend/Dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# 安装系统依赖
+RUN apt-get update && apt-get install -y \
+    gcc \
+    postgresql-client \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 Python 依赖
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 复制代码
+COPY . .
+
+# 收集静态文件
+RUN python manage.py collectstatic --noinput
+
+# 暴露端口
+EXPOSE 8000
+
+# 启动命令
+CMD ["gunicorn", "--config", "gunicorn_config.py", "myproject.wsgi:application"]
+```
+
+```dockerfile
+# frontend/Dockerfile
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+### 2. Nginx 配置
+
+```nginx
+# nginx/default.conf
+upstream backend {
+    server backend:8000;
+}
+
+server {
+    listen 80;
+    server_name localhost;
+
+    # 前端静态文件
+    location / {
+        root /usr/share/nginx/html;
+        index index.html;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # API 代理
+    location /api/ {
+        proxy_pass http://backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Django Admin
+    location /admin/ {
+        proxy_pass http://backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # 静态文件
+    location /static/ {
+        proxy_pass http://backend;
+    }
+
+    location /media/ {
+        proxy_pass http://backend;
+    }
+}
+```
+
+### 3. Docker Compose 配置
+
+```yaml
+# docker-compose.yml
+version: '3.9'
+
+services:
+  # PostgreSQL 数据库
+  db:
+    image: postgres:15-alpine
+    container_name: myproject_db
+    restart: always
+    environment:
+      POSTGRES_DB: myproject
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: myproject_redis
+    restart: always
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Django 后端
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: myproject_backend
+    restart: always
+    environment:
+      - DEBUG=False
+      - DATABASE_URL=postgres://postgres:${DB_PASSWORD:-changeme}@db:5432/myproject
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-changeme}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+
+  # React 前端
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: myproject_frontend
+    restart: always
+    depends_on:
+      - backend
+
+  # Nginx 反向代理
+  nginx:
+    image: nginx:alpine
+    container_name: myproject_nginx
+    restart: always
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx:/etc/nginx/conf.d
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  postgres_data:
+  redis_data:
+  static_volume:
+  media_volume:
+```
+
+### 4. 环境变量文件
+
+```bash
+# .env
+# Django
+DEBUG=False
+SECRET_KEY=your-super-secret-key-change-in-production
+ALLOWED_HOSTS=localhost,yourdomain.com
+
+# Database
+DB_PASSWORD=changeme
+
+# Ports
+HTTP_PORT=80
+HTTPS_PORT=443
+```
+
+### 5. 启动命令
+
+```bash
+# 开发环境
+docker-compose up -d
+
+# 生产环境
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+# 查看日志
+docker-compose logs -f
+
+# 停止
+docker-compose down
+
+# 重启服务
+docker-compose restart backend
+
+# 数据库迁移
+docker-compose exec backend python manage.py migrate
+
+# 创建超级用户
+docker-compose exec backend python manage.py createsuperuser
+```
+
+### 6. 生产环境额外配置
+
+```yaml
+# docker-compose.prod.yml
+services:
+  backend:
+    environment:
+      - DEBUG=False
+      - SECURE_SSL_REDIRECT=True
+      - SESSION_COOKIE_SECURE=True
+      - CSRF_COOKIE_SECURE=True
+      - SECURE_HSTS_SECONDS=31536000
+
+  nginx:
+    volumes:
+      - ./ssl:/etc/nginx/ssl
+```
+
+### 7. Makefile 简化操作
+
+```makefile
+# Makefile
+.PHONY: up down logs migrate superuser build
+
+up:
+	docker-compose up -d
+
+down:
+	docker-compose down
+
+logs:
+	docker-compose logs -f
+
+migrate:
+	docker-compose exec backend python manage.py makemigrations
+	docker-compose exec backend python manage.py migrate
+
+superuser:
+	docker-compose exec backend python manage.py createsuperuser
+
+build:
+	docker-compose build
+
+restart:
+	docker-compose restart
+
+shell:
+	docker-compose exec backend sh
+```
+
+---
+
+## 完整项目工作流
+
+### 开发环境
+
+```bash
+# 1. 克隆项目
+git clone https://github.com/yourusername/myproject.git
+cd myproject
+
+# 2. 复制环境变量
+cp .env.example .env
+
+# 3. 启动开发环境
+docker-compose up -d
+
+# 4. 数据库迁移
+docker-compose exec backend python manage.py migrate
+
+# 5. 创建管理员
+docker-compose exec backend python manage.py createsuperuser
+
+# 6. 访问
+# 前端: http://localhost
+# 后端 API: http://localhost/api
+# Admin: http://localhost/admin
+```
+
+### 生产部署
+
+```bash
+# 1. 配置环境变量
+export DOMAIN=yourdomain.com
+export SECRET_KEY=your-secret-key
+
+# 2. 构建并启动
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+# 3. 检查状态
+docker-compose ps
+
+# 4. 查看日志
+docker-compose logs -f nginx
+```
+
