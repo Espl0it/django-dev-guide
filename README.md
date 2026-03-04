@@ -9,112 +9,127 @@ Django 是一个高级 Python Web 框架，鼓励快速开发和简洁实用的�
 3. [最佳实践](#最佳实践)
 4. [模型设计](#模型设计)
 5. [视图与路由](#视图与路由)
-6. [API 开发](#api-开发)
-7. [安全建议](#安全建议)
-8. [部署指南](#部署指南)
+6. [服务层](#服务层)
+7. [认证与权限](#认证与权限)
+8. [缓存与性能](#缓存与性能)
+9. [异步任务](#异步任务)
+10. [管理命令](#管理命令)
+11. [安全建议](#安全建议)
+12. [部署指南](#部署指南)
 
 ---
 
 ## 项目结构
 
+推荐的单应用模块化结构（参考 meta-space）：
+
 ```
 myproject/
-├── myproject/           # 项目配置
+├── myproject/                 # 项目配置
 │   ├── __init__.py
-│   ├── settings.py      # 项目设置
-│   ├── urls.py          # 根路由
-│   ├── wsgi.py         # WSGI 入口
-│   └── asgi.py         # ASGI 入口
-├── apps/                # 应用目录
-│   ├── users/          # 用户应用
+│   ├── settings.py           # 项目设置
+│   ├── urls.py               # 根路由
+│   ├── wsgi.py               # WSGI 入口
+│   └── asgi.py               # ASGI 入口
+├── app/                      # 主应用（推荐单应用）
+│   ├── __init__.py
+│   ├── apps.py
+│   ├── models.py             # 所有模型
+│   ├── views.py              # API 视图
+│   ├── views_auth.py         # 认证视图
+│   ├── views_dashboard.py    # 仪表盘视图
+│   ├── serializers.py        # 序列化器
+│   ├── urls.py               # 路由配置
+│   ├── tasks.py              # Celery 任务
+│   ├── services/             # 服务层 ⭐
 │   │   ├── __init__.py
-│   │   ├── models.py
-│   │   ├── views.py
-│   │   ├── urls.py
-│   │   ├── admin.py
-│   │   ├── apps.py
-│   │   ├── serializers.py  # DRF
-│   │   └── tests.py
-│   └── blog/           # 博客应用
-├── templates/            # 模板目录
-├── static/              # 静态文件
-├── media/               # 用户上传
-├── requirements.txt     # 依赖
-├── .env                 # 环境变量
-├── manage.py            # Django 管理脚本
-└── pytest.ini          # 测试配置
+│   │   ├── base.py           # 基类
+│   │   ├── symbols_service.py
+│   │   └── daily_kline_service.py
+│   ├── management/           # Django 管理命令
+│   │   └── commands/
+│   │       ├── __init__.py
+│   │       └── populate_xxx.py
+│   ├── migrations/
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   └── helpers.py
+│   └── admin.py
+├── static/                   # 静态文件
+├── media/                    # 用户上传
+├── requirements.txt
+├── .env
+├── manage.py
+├── docker-compose.yml
+└── Dockerfile
 ```
+
+**特点：**
+- 单应用结构，避免循环导入
+- services/ 目录封装外部 API 调用
+- management/commands/ 放置数据同步命令
+- tasks.py 集中管理异步任务
 
 ---
 
 ## 环境配置
 
-### 1. 虚拟环境
+### 1. 依赖管理
 
 ```bash
-# 创建虚拟环境
-python -m venv venv
-
-# 激活
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
-
-# 安装依赖
-pip install django djangorestframework psycopg2-binary python-dotenv
-```
-
-### 2. requirements.txt
-
-```
+# requirements.txt
 Django>=4.2,<5.0
 djangorestframework>=3.14,<4.0
-psycopg2-binary>=2.9
-python-dotenv>=1.0
+djangorestframework-simplejwt>=5.3
+django-cors-headers>=4.3
+django-redis>=5.4
+django-celery-beat>=2.5
 celery>=5.3
-redis>=4.5
+redis>=5.0
+mysqlclient>=2.2
+python-dotenv>=1.0
 gunicorn>=21.0
 ```
 
-### 3. 环境变量 (.env)
+### 2. 环境变量 (.env)
 
 ```bash
 # .env
-DEBUG=True
-SECRET_KEY=your-secret-key-here
-ALLOWED_HOSTS=localhost,127.0.0.1
-DATABASE_URL=postgres://user:pass@localhost:5432/mydb
+DEBUG=False
+SECRET_KEY=your-secret-key-change-in-production
+ALLOWED_HOSTS=localhost,127.0.0.1,yourdomain.com
+
+# 数据库 (MySQL)
+DB_NAME=myproject
+DB_USER=myproject
+DB_PASSWORD=your_password
+DB_HOST=localhost
+DB_PORT=3306
+
+# Redis
 REDIS_URL=redis://localhost:6379/0
+
+# Celery
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/0
+
+# JWT
+JWT_SECRET_KEY=your_jwt_secret
 ```
 
-### 4. settings.py 配置
+### 3. settings.py 配置
 
 ```python
 # settings.py
 import os
 from pathlib import Path
-from dotenv import load_dotenv
-
-load_dotenv()
+from datetime import timedelta
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.getenv('SECRET_KEY')
-
-DEBUG = os.getenv('DEBUG', 'False') == 'True'
-
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '').split(',')
-
-# 数据库
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('DB_NAME'),
-        'USER': os.getenv('DB_USER'),
-        'PASSWORD': os.getenv('DB_PASSWORD'),
-        'HOST': os.getenv('DB_HOST', 'localhost'),
-        'PORT': os.getenv('DB_PORT', '5432'),
-    }
-}
+DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '*').split(',')
 
 # 应用
 INSTALLED_APPS = [
@@ -124,30 +139,98 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'rest_framework',
     'corsheaders',
-    'apps.users',
+    'rest_framework',
+    'django_celery_beat',
+    'app',
 ]
+
+# 中间件
+MIDDLEWARE = [
+    'django.middleware.security.SecurityMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+]
+
+# 数据库 (MySQL)
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': os.getenv('DB_NAME'),
+        'USER': os.getenv('DB_USER'),
+        'PASSWORD': os.getenv('DB_PASSWORD'),
+        'HOST': os.getenv('DB_HOST', 'localhost'),
+        'PORT': os.getenv('DB_PORT', '3306'),
+        'OPTIONS': {
+            'charset': 'utf8mb4',
+        },
+    }
+}
 
 # REST Framework
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.SessionAuthentication',
-    ],
-    'DEFAULT_PERMISSION_CLASSES': [
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ),
+    'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
+    ),
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
     ],
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 20,
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '500/day',
+        'user': '5000/day',
+    },
 }
 
-# 静态文件
-STATIC_URL = '/static/'
-STATIC_ROOT = BASE_DIR / 'staticfiles'
+# JWT 配置
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=2),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+}
 
-# 媒体文件
-MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+# Redis 缓存
+CACHES = {
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': os.getenv('REDIS_URL', 'redis://localhost:6379/1'),
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+        },
+        'KEY_PREFIX': 'myproject',
+        'TIMEOUT': 300,
+    }
+}
+
+# Celery 配置
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL')
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND')
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = 'Asia/Shanghai'
+
+# Celery Beat 周期任务
+from celery.schedules import crontab
+CELERY_BEAT_SCHEDULE = {
+    'daily-task': {
+        'task': 'app.tasks.daily_task',
+        'schedule': crontab(hour=2, minute=0),
+    },
+}
+
+# 自定义用户模型
+AUTH_USER_MODEL = 'app.User'
 ```
 
 ---
@@ -161,7 +244,7 @@ MEDIA_ROOT = BASE_DIR / 'media'
 django-admin startproject myproject .
 
 # 创建应用
-python manage.py startapp users
+python manage.py startapp app
 
 # 迁移
 python manage.py makemigrations
@@ -169,83 +252,65 @@ python manage.py migrate
 
 # 超级用户
 python manage.py createsuperuser
-
-# 运行
-python manage.py runserver
 ```
 
 ### 2. 代码规范
 
 ```python
 # ✅ 正确：使用路径导入
-from apps.users.models import User
-from apps.blog.serializers import PostSerializer
-
-# ❌ 错误：避免循环导入
-# from blog.models import Post  # 在 users/models.py 中
+from app.models import User
+from app.services import StockService
 
 # ✅ 正确：类型注解
-from typing import Optional
+from typing import Optional, List
 from django.db.models import QuerySet
 
 def get_user(pk: int) -> Optional[User]:
     return User.objects.filter(pk=pk).first()
-```
 
-### 3. 应用结构
+# ✅ 正确：使用视图集
+from rest_framework import viewsets
 
-```python
-# apps/users/models.py
-from django.db import models
-from django.contrib.auth.models import AbstractUser
-
-
-class User(AbstractUser):
-    """自定义用户模型"""
-    bio = models.TextField(blank=True)
-    avatar = models.ImageField(upload_to='avatars/', blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = 'users'
-        ordering = ['-created_at']
-
-    def __str__(self):
-        return self.username
-```
-
-```python
-# apps/users/apps.py
-from django.apps import AppConfig
-
-
-class UsersConfig(AppConfig):
-    default_auto_field = 'django.db.models.BigAutoField'
-    name = 'apps.users'
-    verbose_name = '用户'
-```
-
-```python
-# settings.py 添加
-AUTH_USER_MODEL = 'users.User'
+class StockViewSet(viewsets.ViewSet):
+    pass
 ```
 
 ---
 
 ## 模型设计
 
-### 1. 基类模型
+### 1. 基础模型
 
 ```python
-# core/models.py
+# app/models.py
 from django.db import models
+from django.contrib.auth.models import AbstractUser
+from django.utils import timezone
+
+
+class User(AbstractUser):
+    """扩展用户模型"""
+    phone = models.CharField(max_length=20, blank=True, verbose_name='手机号')
+    avatar = models.URLField(blank=True, verbose_name='头像')
+    api_calls_today = models.IntegerField(default=0, verbose_name='今日API调用次数')
+    api_calls_reset_at = models.DateTimeField(default=timezone.now, verbose_name='API调用重置时间')
+    is_premium = models.BooleanField(default=False, verbose_name='是否Premium用户')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='注册时间', db_index=True)
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'user'
+        verbose_name = '用户'
+        verbose_name_plural = '用户'
+
+    def __str__(self):
+        return self.username
 
 
 class TimeStampedModel(models.Model):
     """时间戳基类"""
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
     class Meta:
         abstract = True
@@ -253,133 +318,135 @@ class TimeStampedModel(models.Model):
 
 class UUIDModel(models.Model):
     """UUID主键基类"""
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(primary_key=True, default=models.UUIDField(default=uuid.uuid4, editable=False))
 
     class Meta:
         abstract = True
 ```
 
-### 2. 使用示例
+### 2. 关系模型
 
 ```python
-# apps/blog/models.py
-from django.db import models
-from django.conf import settings
-from core.models import TimeStampedModel
-
-
-class Category(TimeStampedModel):
-    name = models.CharField(max_length=100, unique=True)
-    slug = models.SlugField(max_length=100, unique=True)
+class UserFavorite(TimeStampedModel):
+    """用户收藏"""
+    user = models.ForeignKey(
+        User, 
+        on_delete=models.CASCADE, 
+        related_name='favorites',
+        verbose_name='用户'
+    )
+    symbol = models.CharField(max_length=20, verbose_name='股票代码')
+    market = models.CharField(max_length=10, verbose_name='市场')
 
     class Meta:
-        verbose_name = '分类'
-        verbose_name_plural = '分类'
-
-    def __str__(self):
-        return self.name
-
-
-class Post(TimeStampedModel):
-    title = models.CharField(max_length=200)
-    slug = models.SlugField(max_length=200, unique=True)
-    content = models.TextField()
-    author = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name='posts'
-    )
-    category = models.ForeignKey(
-        Category,
-        on_delete=models.SET_NULL,
-        null=True,
-        related_name='posts'
-    )
-    status = models.CharField(
-        max_length=10,
-        choices=[
-            ('draft', '草稿'),
-            ('published', '已发布'),
-        ],
-        default='draft'
-    )
-    views = models.PositiveIntegerField(default=0)
-
-    class Meta:
-        ordering = ['-created_at']
+        db_table = 'user_favorite'
+        verbose_name = '用户收藏'
+        verbose_name_plural = '用户收藏'
+        unique_together = [['user', 'symbol', 'market']]
         indexes = [
-            models.Index(fields=['-created_at']),
-            models.Index(fields=['status', '-created_at']),
+            models.Index(fields=['user', 'market'], name='user_fav_user_market_idx')
         ]
 
     def __str__(self):
-        return self.title
+        return f"{self.user.username} - {self.symbol}"
 ```
+
+### 3. 数据模型示例
+
+```python
+class StockList(TimeStampedModel):
+    """股票列表"""
+    symbol = models.CharField(max_length=20, unique=True, verbose_name='股票代码')
+    company_name = models.CharField(max_length=100, verbose_name='公司名称')
+    exchange = models.CharField(max_length=10, verbose_name='交易所', db_index=True)
+    
+    # A股字段
+    ts_code = models.CharField(max_length=20, verbose_name='TS代码', blank=True)
+    area = models.CharField(max_length=50, verbose_name='地域', blank=True)
+    industry = models.CharField(max_length=50, verbose_name='行业', blank=True)
+    list_date = models.DateField(verbose_name='上市日期', null=True, blank=True, db_index=True)
+    
+    # 美股字段
+    sector = models.CharField(max_length=50, verbose_name='行业板块', blank=True)
+    market_cap = models.BigIntegerField(verbose_name='市值', null=True, blank=True, db_index=True)
+    price = models.DecimalField(max_digits=20, decimal_places=2, verbose_name='当前价格', null=True, blank=True)
+    
+    is_actively_trading = models.BooleanField(default=True, verbose_name='是否交易中')
+    data_source = models.CharField(max_length=20, verbose_name='数据源', blank=True, db_index=True)
+
+    class Meta:
+        db_table = 'stock_list'
+        verbose_name = '股票列表'
+        verbose_name_plural = '股票列表'
+        indexes = [
+            models.Index(fields=['exchange', 'is_actively_trading']),
+        ]
+
+    def __str__(self):
+        return f"{self.symbol} - {self.company_name}"
+```
+
+### 4. 字段命名规范
+
+| 字段类型 | 命名示例 | 说明 |
+|---------|---------|------|
+| 外键 | `user`, `category` | 使用模型名小写 |
+| 布尔 | `is_active`, `is_premium` | is_ 前缀 |
+| 时间 | `created_at`, `updated_at` | auto_now_add/auto_now |
+| 索引 | `db_index=True` | 频繁查询字段加索引 |
+| 关联 | `related_name` | 便于反向查询 |
 
 ---
 
 ## 视图与路由
 
-### 1. REST API 视图
+### 1. API 视图
 
 ```python
-# apps/users/views.py
-from rest_framework import viewsets, status
-from rest_framework.decorators import action
+# app/views.py
+from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from .models import User
-from .serializers import UserSerializer, UserCreateSerializer
+from rest_framework import status
+from rest_framework.throttling import AnonRateThrottle, UserRateThrottle
+from django.core.cache import cache
+from django.db.models import Q
 
-
-class UserViewSet(viewsets.ModelViewSet):
-    """用户视图集"""
-    queryset = User.objects.all()
-    serializer_class = UserSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_serializer_class(self):
-        if self.action == 'create':
-            return UserCreateSerializer
-        return UserSerializer
-
-    @action(detail=False, methods=['get'])
-    def me(self, request):
-        """当前用户信息"""
-        serializer = self.get_serializer(request.user)
-        return Response(serializer.data)
-
-    @action(detail=False, methods=['post'])
-    def change_password(self, request):
-        """修改密码"""
-        user = request.user
-        old_password = request.data.get('old_password')
-        new_password = request.data.get('new_password')
-
-        if not user.check_password(old_password):
-            return Response(
-                {'error': '原密码错误'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        user.set_password(new_password)
-        user.save()
-        return Response({'message': '密码修改成功'})
+class StockListView(APIView):
+    """股票列表视图"""
+    throttle_classes = [AnonRateThrottle, UserRateThrottle]
+    
+    def get(self, request):
+        # 缓存查询
+        cache_key = 'stock_list'
+        data = cache.get(cache_key)
+        
+        if data is None:
+            from app.models import StockList
+            stocks = StockList.objects.filter(is_actively_trading=True)
+            data = list(stocks.values())
+            cache.set(cache_key, data, 300)  # 5分钟缓存
+        
+        return Response(data)
 ```
 
 ### 2. 路由配置
 
 ```python
-# apps/users/urls.py
+# app/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import UserViewSet
+from .views import StockListView
+from .views_auth import LoginView, LogoutView
+from .views_dashboard import DashboardView
 
 router = DefaultRouter()
-router.register(r'users', UserViewSet)
 
 urlpatterns = [
     path('', include(router.urls)),
+    path('stocks/', StockListView.as_view(), name='stock-list'),
+    path('auth/login/', LoginView.as_view(), name='login'),
+    path('auth/logout/', LogoutView.as_view(), name='logout'),
+    path('dashboard/', DashboardView.as_view(), name='dashboard'),
 ]
 ```
 
@@ -387,27 +454,17 @@ urlpatterns = [
 # myproject/urls.py
 from django.contrib import admin
 from django.urls import path, include
-from django.conf import settings
-from django.conf.urls.static import static
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/', include('apps.users.urls')),
-    path('api/', include('apps.blog.urls')),
+    path('api/', include('app.urls')),
 ]
-
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 ```
 
----
-
-## API 开发
-
-### 1. Serializer
+### 3. 序列化器
 
 ```python
-# apps/users/serializers.py
+# app/serializers.py
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
@@ -416,16 +473,13 @@ User = get_user_model()
 
 
 class UserSerializer(serializers.ModelSerializer):
-    """用户序列化器"""
-    
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'bio', 'avatar', 'created_at']
+        fields = ['id', 'username', 'email', 'phone', 'avatar', 'is_premium', 'created_at']
         read_only_fields = ['id', 'created_at']
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
-    """用户创建序列化器"""
     password = serializers.CharField(write_only=True, validators=[validate_password])
     password_confirm = serializers.CharField(write_only=True)
 
@@ -444,36 +498,386 @@ class UserCreateSerializer(serializers.ModelSerializer):
         return user
 ```
 
-### 2. 分页
+---
+
+## 服务层
+
+### 1. 服务基类
 
 ```python
-# core/pagination.py
-from rest_framework.pagination import PageNumberPagination
+# app/services/base.py
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 
-class StandardPagination(PageNumberPagination):
-    page_size = 20
-    page_size_query_param = 'page_size'
-    max_page_size = 100
+class BaseService(ABC):
+    """服务基类"""
+    
+    def __init__(self):
+        self.logger = logger
+    
+    @abstractmethod
+    def fetch_symbols(self, **kwargs) -> List[Dict]:
+        """获取标的列表"""
+        pass
+    
+    @abstractmethod
+    def fetch_daily_kline(self, symbol: str, **kwargs) -> List[Dict]:
+        """获取日K线"""
+        pass
+    
+    def log_error(self, message: str, **kwargs):
+        self.logger.error(message, extra=kwargs)
+    
+    def log_info(self, message: str, **kwargs):
+        self.logger.info(message, extra=kwargs)
 ```
 
-### 3. 过滤
+### 2. 数据服务示例
 
 ```python
-# apps/blog/filters.py
-from django_filters import rest_framework as filters
-from apps.blog.models import Post
+# app/services/tushare_service.py
+import tushare as ts
+from typing import List, Dict
+from .base import BaseService
 
 
-class PostFilter(filters.FilterSet):
-    status = filters.CharFilter(field_name='status')
-    category = filters.CharFilter(field_name='category__slug')
-    author = filters.NumberFilter(field_name='author__id')
-    created_after = filters.DateTimeFilter(field_name='created_at', lookup_expr='gte')
+class TushareService(BaseService):
+    """Tushare 数据服务"""
+    
+    def __init__(self, token: str = None):
+        super().__init__()
+        self.pro = ts.pro_api(token)
+    
+    def fetch_symbols(self, market: str = 'cn', symbol_type: str = 'stock') -> List[Dict]:
+        """获取股票列表"""
+        try:
+            df = self.pro.stock_basic(
+                exchange='',
+                list_status='L',
+                fields='ts_code,symbol,name,area,industry,list_date'
+            )
+            return df.to_dict('records')
+        except Exception as e:
+            self.log_error('fetch_symbols failed', error=str(e))
+            return []
+    
+    def fetch_daily_kline(self, ts_code: str, start_date: str, end_date: str) -> List[Dict]:
+        """获取日K线"""
+        try:
+            df = self.pro.daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+            return df.to_dict('records')
+        except Exception as e:
+            self.log_error('fetch_daily_kline failed', error=str(e), ts_code=ts_code)
+            return []
+```
 
-    class Meta:
-        model = Post
-        fields = ['status', 'category', 'author']
+### 3. 服务注册
+
+```python
+# app/services/__init__.py
+from .tushare_service import TushareService
+from .fmp_service import FMPService
+
+__all__ = ['TushareService', 'FMPService']
+```
+
+---
+
+## 认证与权限
+
+### 1. JWT 认证
+
+```python
+# settings.py 添加
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ),
+}
+```
+
+### 2. 自定义权限
+
+```python
+# app/permissions.py
+from rest_framework import permissions
+
+
+class IsPremiumUser(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return request.user and request.user.is_authenticated and request.user.is_premium
+
+
+class IsOwnerOrReadOnly(permissions.BasePermission):
+    def has_object_permission(self, request, view, obj):
+        if request.method in permissions.SAFE_METHODS:
+            return True
+        return obj.user == request.user
+```
+
+### 3. 认证视图
+
+```python
+# app/views_auth.py
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework_simplejwt.tokens import RefreshToken
+from django.contrib.auth import authenticate
+
+
+class LoginView(APIView):
+    def post(self, request):
+        username = request.data.get('username')
+        password = request.data.get('password')
+        
+        user = authenticate(username=username, password=password)
+        
+        if user:
+            refresh = RefreshToken.for_user(user)
+            return Response({
+                'access': str(refresh.access_token),
+                'refresh': str(refresh),
+                'user': {
+                    'id': user.id,
+                    'username': user.username,
+                    'is_premium': user.is_premium,
+                }
+            })
+        
+        return Response(
+            {'error': '用户名或密码错误'},
+            status=status.HTTP_401_UNAUTHORIZED
+        )
+
+
+class LogoutView(APIView):
+    def post(self, request):
+        try:
+            refresh_token = request.data.get('refresh')
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+            return Response({'message': '登出成功'})
+        except Exception:
+            return Response({'error': '无效的token'}, status=status.HTTP_400_BAD_REQUEST)
+```
+
+---
+
+## 缓存与性能
+
+### 1. Redis 缓存
+
+```python
+# 缓存使用
+from django.core.cache import cache
+
+# 设置缓存
+cache.set('key', 'value', 300)  # 5分钟
+
+# 获取缓存
+value = cache.get('key')
+
+# 删除缓存
+cache.delete('key')
+
+# 模式删除
+cache.delete_pattern('stock_*')
+```
+
+### 2. 查询优化
+
+```python
+# ✅ 正确：使用 select_related
+stocks = StockList.objects.select_related('category').all()
+
+# ✅ 正确：使用 prefetch_related
+user = User.objects.prefetch_related('favorites').first()
+
+# ✅ 正确：使用 only/defer
+stocks = StockList.objects.only('symbol', 'company_name').all()
+
+# ✅ 正确：使用 values()
+data = StockList.objects.values('symbol', 'price')
+```
+
+### 3. 索引配置
+
+```python
+class Meta:
+    indexes = [
+        models.Index(fields=['created_at']),
+        models.Index(fields=['exchange', 'is_actively_trading']),
+        models.Index(fields=['user', '-created_at']),
+    ]
+```
+
+---
+
+## 异步任务
+
+### 1. Celery 任务
+
+```python
+# app/tasks.py
+from celery import shared_task
+from django.utils import timezone
+from datetime import timedelta
+
+
+@shared_task
+def daily_task():
+    """每日定时任务"""
+    from app.services import StockService
+    
+    service = StockService()
+    symbols = service.fetch_symbols()
+    
+    # 处理数据
+    for symbol in symbols:
+        process_symbol.delay(symbol['code'])
+    
+    return f'Processed {len(symbols)} symbols'
+
+
+@shared_task
+def process_symbol(symbol_code: str):
+    """处理单个标的"""
+    from app.models import StockList
+    
+    stock = StockList.objects.filter(symbol=symbol_code).first()
+    if stock:
+        # 更新逻辑
+        pass
+    return f'Processed {symbol_code}'
+
+
+@shared_task
+def reset_api_calls():
+    """重置每日API调用次数"""
+    from app.models import User
+    
+    User.objects.all().update(
+        api_calls_today=0,
+        api_calls_reset_at=timezone.now() + timedelta(days=1)
+    )
+```
+
+### 2. Celery Beat 配置
+
+```python
+# settings.py
+CELERY_BEAT_SCHEDULE = {
+    'daily-task': {
+        'task': 'app.tasks.daily_task',
+        'schedule': crontab(hour=2, minute=0),  # 每天 02:00
+    },
+    'reset-api-calls': {
+        'task': 'app.tasks.reset_api_calls',
+        'schedule': crontab(hour=0, minute=0),  # 每天 00:00
+    },
+}
+```
+
+### 3. 启动 Celery
+
+```bash
+# Worker
+celery -A myproject worker -l info
+
+# Beat
+celery -A myproject beat -l info
+
+# Docker Compose
+docker compose up -d celery_worker celery_beat
+```
+
+---
+
+## 管理命令
+
+### 1. 数据同步命令
+
+```python
+# app/management/commands/populate_stocks.py
+from django.core.management.base import BaseCommand
+from app.services import TushareService
+from app.models import StockList
+
+
+class Command(BaseCommand):
+    help = '同步股票列表'
+    
+    def add_arguments(self, parser):
+        parser.add_argument('--market', type=str, default='cn', help='市场: cn, us, hk')
+        parser.add_argument('--batch-size', type=int, default=100, help='批量大小')
+    
+    def handle(self, *args, **options):
+        market = options['market']
+        batch_size = options['batch_size']
+        
+        self.stdout.write(f'Starting sync for market: {market}')
+        
+        service = TushareService()
+        symbols = service.fetch_symbols(market=market)
+        
+        stocks_to_create = []
+        for symbol in symbols:
+            stocks_to_create.append(StockList(
+                symbol=symbol['symbol'],
+                company_name=symbol['name'],
+                exchange=symbol.get('exchange', ''),
+                data_source=market,
+            ))
+        
+        # 批量创建
+        StockList.objects.bulk_create(stocks_to_create, batch_size=batch_size, ignore_conflicts=True)
+        
+        self.stdout.write(self.style.SUCCESS(f'Synced {len(stocks_to_create)} stocks'))
+```
+
+### 2. 断点续传命令
+
+```python
+# app/management/commands/populate_daily_kline.py
+from django.core.management.base import BaseCommand
+from django.utils import timezone
+import json
+import os
+
+
+class Command(BaseCommand):
+    help = '同步日K线数据（支持断点续传）'
+    
+    def add_arguments(self, parser):
+        parser.add_argument('--market', type=str, required=True, help='市场')
+        parser.add_argument('--init', action='store_true', help='全量初始化')
+        parser.add_argument('--no-resume', action='store_true', help='忽略断点')
+    
+    def handle(self, *args, **options):
+        market = options['market']
+        checkpoint_file = f'/tmp/daily_kline_{market}.json'
+        
+        # 检查断点
+        start_index = 0
+        if not options['no_resume'] and os.path.exists(checkpoint_file):
+            with open(checkpoint_file, 'r') as f:
+                checkpoint = json.load(f)
+                start_index = checkpoint.get('index', 0)
+                self.stdout.write(f'Resuming from index: {start_index}')
+        
+        # 执行同步
+        total = sync_daily_kline(market, start_index)
+        
+        # 删除断点文件（完成时）
+        if os.path.exists(checkpoint_file):
+            os.remove(checkpoint_file)
+        
+        self.stdout.write(self.style.SUCCESS(f'Synced {total} records'))
 ```
 
 ---
@@ -502,118 +906,130 @@ SECURE_HSTS_PRELOAD = True
 ### 2. 密码验证
 
 ```python
-# settings.py
 AUTH_PASSWORD_VALIDATORS = [
-    {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-        'OPTIONS': {'min_length': 8},
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
-    },
+    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
 ]
 ```
 
 ### 3. CORS 配置
 
 ```python
-# settings.py
-CORS_ALLOWED_ORIGINS = os.getenv(
-    'CORS_ALLOWED_ORIGINS',
-    'http://localhost:3000'
-).split(',')
+CORS_ALLOW_ALL_ORIGINS = os.getenv('DEBUG', 'False').lower() == 'true'
 
-CORS_ALLOW_CREDENTIALS = True
+# 或指定域名
+CORS_ALLOWED_ORIGINS = [
+    'http://localhost:3000',
+    'http://localhost:5179',
+]
 ```
 
 ---
 
 ## 部署指南
 
-### 1. Gunicorn
-
-```bash
-# gunicorn_config.py
-bind = '0.0.0.0:8000'
-workers = 4
-worker_class = 'sync'
-timeout = 120
-keepalive = 5
-
-# 日志
-accesslog = '-'
-errorlog = '-'
-loglevel = 'info'
-```
-
-```bash
-gunicorn -c gunicorn_config.py myproject.wsgi:application
-```
-
-### 2. Docker
-
-```dockerfile
-# Dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-RUN python manage.py collectstatic --noinput
-
-EXPOSE 8000
-
-CMD ["gunicorn", "-c", "gunicorn_config.py", "myproject.wsgi:application"]
-```
+### 1. Docker Compose
 
 ```yaml
 # docker-compose.yml
 version: '3.9'
 
 services:
+  db:
+    image: mysql:8.0
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping"]
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+
   web:
-    build: .
+    build: ./backend
+    restart: always
     ports:
       - "8000:8000"
     environment:
       - DEBUG=False
-      - DATABASE_URL=postgres://user:pass@db:5432/mydb
+      - DB_HOST=db
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+
+  celery_worker:
+    build: ./backend
+    command: celery -A myproject worker -l info
+    restart: always
+    environment:
+      - DB_HOST=db
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
       - redis
 
-  db:
-    image: postgres:15
+  celery_beat:
+    build: ./backend
+    command: celery -A myproject beat -l info
+    restart: always
     environment:
-      - POSTGRES_DB=mydb
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=pass
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7-alpine
+      - DB_HOST=db
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
 
 volumes:
-  postgres_data:
+  mysql_data:
 ```
 
-### 3. Nginx
+### 2. Dockerfile
+
+```dockerfile
+# backend/Dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    gcc \
+    default-libmysqlclient-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 8000
+
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "myproject.wsgi:application"]
+```
+
+### 3. Gunicorn 配置
+
+```python
+# gunicorn_config.py
+bind = '0.0.0.0:8000'
+workers = 4
+worker_class = 'sync'
+timeout = 120
+keepalive = 5
+loglevel = 'info'
+```
+
+### 4. Nginx 配置
 
 ```nginx
-# /etc/nginx/sites-available/myproject
 upstream myproject {
-    server 127.0.0.1:8000;
+    server web:8000;
 }
 
 server {
@@ -633,7 +1049,6 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```
@@ -652,9 +1067,6 @@ python manage.py makemigrations
 python manage.py migrate
 python manage.py showmigrations
 
-# Django Shell
-python manage.py shell
-
 # 测试
 python manage.py test
 pytest
@@ -664,88 +1076,9 @@ python manage.py check
 flake8 .
 black .
 
-# 管理命令
+# 管理
 python manage.py createsuperuser
-python manage.py changepassword username
-python manage.py flush  # 清空数据库
-```
-
----
-
-## 测试
-
-```python
-# apps/users/tests/test_models.py
-from django.test import TestCase
-from django.contrib.auth import get_user_model
-
-User = get_user_model()
-
-
-class UserModelTest(TestCase):
-    def test_create_user(self):
-        user = User.objects.create_user(
-            username='testuser',
-            email='test@example.com',
-            password='testpass123'
-        )
-        self.assertEqual(user.username, 'testuser')
-        self.assertFalse(user.is_staff)
-        self.assertTrue(user.check_password('testpass123'))
-
-    def test_create_superuser(self):
-        user = User.objects.create_superuser(
-            username='admin',
-            email='admin@example.com',
-            password='adminpass123'
-        )
-        self.assertTrue(user.is_staff)
-        self.assertTrue(user.is_superuser)
-```
-
----
-
-## 性能优化
-
-### 1. 数据库查询优化
-
-```python
-# ✅ 正确：使用 select_related
-posts = Post.objects.select_related('author', 'category').all()
-
-# ✅ 正确：使用 prefetch_related
-users = User.objects.prefetch_related('posts').all()
-
-# ✅ 正确：使用 only 减少查询字段
-users = User.objects.only('id', 'username', 'email')
-
-# ✅ 正确：使用 defer 排除不需要的字段
-users = User.objects.defer('password', 'last_login')
-```
-
-### 2. 缓存
-
-```python
-# views.py
-from django.core.cache import cache
-
-def get_popular_posts():
-    posts = cache.get('popular_posts')
-    if not posts:
-        posts = Post.objects.filter(status='published')[:10]
-        cache.set('popular_posts', posts, 3600)  # 缓存1小时
-    return posts
-```
-
-### 3. 索引
-
-```python
-class Meta:
-    indexes = [
-        models.Index(fields=['created_at']),
-        models.Index(fields=['status', '-created_at']),
-        models.Index(fields=['author', 'created_at']),
-    ]
+python manage.py shell
 ```
 
 ---
@@ -755,14 +1088,14 @@ class Meta:
 | 类别 | 包 | 说明 |
 |------|-----|------|
 | API | djangorestframework | REST API 框架 |
-| API | django-filter | 过滤 |
-| API | djangorestframework-csv | CSV 导出 |
-| 管理 | django-cors-headers | CORS 支持 |
-| 管理 | django-allauth | 社交登录 |
+| API | djangorestframework-simplejwt | JWT 认证 |
+| API | django-cors-headers | CORS 支持 |
+| 缓存 | django-redis | Redis 缓存 |
 | 任务 | celery | 异步任务 |
+| 任务 | django-celery-beat | Celery 定时任务 |
+| 数据库 | mysqlclient | MySQL 驱动 |
 | 测试 | pytest-django | pytest 集成 |
 | 部署 | gunicorn | WSGI 服务器 |
-| 部署 | whitenoise | 静态文件服务 |
 
 ---
 
@@ -770,504 +1103,5 @@ class Meta:
 
 - [Django 官方文档](https://docs.djangoproject.com/)
 - [Django REST Framework](https://www.django-rest-framework.org/)
-- [Two-Scoops of Django](https://www.feldroy.com/books/two-scoops-of-django-3-edition)
-- [Django Blog Tutorial](https://developer.mozilla.org/en-US/docs/Learn/Server-side/Django)
-
----
-
-## 前端框架集成 (Vite + React/Vue)
-
-### 1. 项目结构
-
-```
-myproject/
-├── backend/                 # Django 后端
-│   ├── myproject/
-│   ├── apps/
-│   ├── requirements.txt
-│   └── manage.py
-├── frontend/               # Vite 前端
-│   ├── src/
-│   │   ├── components/
-│   │   ├── pages/
-│   │   ├── api/
-│   │   ├── App.jsx
-│   │   └── main.jsx
-│   ├── public/
-│   ├── index.html
-│   ├── vite.config.js
-│   ├── package.json
-│   └── .env
-├── docker-compose.yml
-├── nginx/
-│   └── default.conf
-└── README.md
-```
-
-### 2. 前端初始化 (Vite + React)
-
-```bash
-# 创建前端目录
-mkdir frontend && cd frontend
-
-# 初始化 Vite + React
-npm create vite@latest . -- --template react
-
-# 安装依赖
-npm install
-
-# 安装额外依赖
-npm install axios react-router-dom zustand @tanstack/react-query
-npm install -D tailwindcss postcss autoprefixer
-```
-
-### 3. Vite 配置
-
-```javascript
-// vite.config.js
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-import path from 'path'
-
-export default defineConfig({
-  plugins: [react()],
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
-    },
-  },
-  server: {
-    port: 3000,
-    proxy: {
-      '/api': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-      '/admin': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-      },
-    },
-  },
-  build: {
-    outDir: '../static/dist',
-    emptyOutDir: true,
-  },
-})
-```
-
-### 4. 环境变量
-
-```bash
-# frontend/.env
-VITE_API_URL=http://localhost:8000
-VITE_WS_URL=ws://localhost:8000
-```
-
-### 5. API 客户端
-
-```javascript
-// src/api/axios.js
-import axios from 'axios'
-
-const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || '/api',
-  withCredentials: true,
-})
-
-// 请求拦截器
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
-})
-
-// 响应拦截器
-api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('token')
-      window.location.href = '/login'
-    }
-    return Promise.reject(error)
-  }
-)
-
-export default api
-```
-
-### 6. React 组件示例
-
-```jsx
-// src/pages/Login.jsx
-import { useState } from 'react'
-import api from '../api/axios'
-
-export default function Login() {
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-
-  const handleLogin = async (e) => {
-    e.preventDefault()
-    try {
-      const { data } = await api.post('/auth/login/', { username, password })
-      localStorage.setItem('token', data.access)
-      window.location.href = '/'
-    } catch (error) {
-      alert('登录失败')
-    }
-  }
-
-  return (
-    <form onSubmit={handleLogin}>
-      <input
-        type="text"
-        value={username}
-        onChange={(e) => setUsername(e.target.value)}
-        placeholder="用户名"
-      />
-      <input
-        type="password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        placeholder="密码"
-      />
-      <button type="submit">登录</button>
-    </form>
-  )
-}
-```
-
----
-
-## Docker Compose 部署
-
-### 1. Docker 配置
-
-```dockerfile
-# backend/Dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-
-# 安装系统依赖
-RUN apt-get update && apt-get install -y \
-    gcc \
-    postgresql-client \
-    libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# 安装 Python 依赖
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# 复制代码
-COPY . .
-
-# 收集静态文件
-RUN python manage.py collectstatic --noinput
-
-# 暴露端口
-EXPOSE 8000
-
-# 启动命令
-CMD ["gunicorn", "--config", "gunicorn_config.py", "myproject.wsgi:application"]
-```
-
-```dockerfile
-# frontend/Dockerfile
-FROM node:20-alpine AS builder
-
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-
-FROM nginx:alpine
-COPY --from=builder /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
-```
-
-### 2. Nginx 配置
-
-```nginx
-# nginx/default.conf
-upstream backend {
-    server backend:8000;
-}
-
-server {
-    listen 80;
-    server_name localhost;
-
-    # 前端静态文件
-    location / {
-        root /usr/share/nginx/html;
-        index index.html;
-        try_files $uri $uri/ /index.html;
-    }
-
-    # API 代理
-    location /api/ {
-        proxy_pass http://backend;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # Django Admin
-    location /admin/ {
-        proxy_pass http://backend;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-
-    # 静态文件
-    location /static/ {
-        proxy_pass http://backend;
-    }
-
-    location /media/ {
-        proxy_pass http://backend;
-    }
-}
-```
-
-### 3. Docker Compose 配置
-
-```yaml
-# docker-compose.yml
-version: '3.9'
-
-services:
-  # PostgreSQL 数据库
-  db:
-    image: postgres:15-alpine
-    container_name: myproject_db
-    restart: always
-    environment:
-      POSTGRES_DB: myproject
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # Redis 缓存
-  redis:
-    image: redis:7-alpine
-    container_name: myproject_redis
-    restart: always
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # Django 后端
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: myproject_backend
-    restart: always
-    environment:
-      - DEBUG=False
-      - DATABASE_URL=postgres://postgres:${DB_PASSWORD:-changeme}@db:5432/myproject
-      - REDIS_URL=redis://redis:6379/0
-      - SECRET_KEY=${SECRET_KEY:-changeme}
-      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost}
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - ./backend:/app
-      - static_volume:/app/staticfiles
-      - media_volume:/app/media
-
-  # React 前端
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: myproject_frontend
-    restart: always
-    depends_on:
-      - backend
-
-  # Nginx 反向代理
-  nginx:
-    image: nginx:alpine
-    container_name: myproject_nginx
-    restart: always
-    ports:
-      - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
-    volumes:
-      - ./nginx:/etc/nginx/conf.d
-      - static_volume:/app/staticfiles
-      - media_volume:/app/media
-    depends_on:
-      - backend
-      - frontend
-
-volumes:
-  postgres_data:
-  redis_data:
-  static_volume:
-  media_volume:
-```
-
-### 4. 环境变量文件
-
-```bash
-# .env
-# Django
-DEBUG=False
-SECRET_KEY=your-super-secret-key-change-in-production
-ALLOWED_HOSTS=localhost,yourdomain.com
-
-# Database
-DB_PASSWORD=changeme
-
-# Ports
-HTTP_PORT=80
-HTTPS_PORT=443
-```
-
-### 5. 启动命令
-
-```bash
-# 开发环境
-docker-compose up -d
-
-# 生产环境
-docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-
-# 查看日志
-docker-compose logs -f
-
-# 停止
-docker-compose down
-
-# 重启服务
-docker-compose restart backend
-
-# 数据库迁移
-docker-compose exec backend python manage.py migrate
-
-# 创建超级用户
-docker-compose exec backend python manage.py createsuperuser
-```
-
-### 6. 生产环境额外配置
-
-```yaml
-# docker-compose.prod.yml
-services:
-  backend:
-    environment:
-      - DEBUG=False
-      - SECURE_SSL_REDIRECT=True
-      - SESSION_COOKIE_SECURE=True
-      - CSRF_COOKIE_SECURE=True
-      - SECURE_HSTS_SECONDS=31536000
-
-  nginx:
-    volumes:
-      - ./ssl:/etc/nginx/ssl
-```
-
-### 7. Makefile 简化操作
-
-```makefile
-# Makefile
-.PHONY: up down logs migrate superuser build
-
-up:
-	docker-compose up -d
-
-down:
-	docker-compose down
-
-logs:
-	docker-compose logs -f
-
-migrate:
-	docker-compose exec backend python manage.py makemigrations
-	docker-compose exec backend python manage.py migrate
-
-superuser:
-	docker-compose exec backend python manage.py createsuperuser
-
-build:
-	docker-compose build
-
-restart:
-	docker-compose restart
-
-shell:
-	docker-compose exec backend sh
-```
-
----
-
-## 完整项目工作流
-
-### 开发环境
-
-```bash
-# 1. 克隆项目
-git clone https://github.com/yourusername/myproject.git
-cd myproject
-
-# 2. 复制环境变量
-cp .env.example .env
-
-# 3. 启动开发环境
-docker-compose up -d
-
-# 4. 数据库迁移
-docker-compose exec backend python manage.py migrate
-
-# 5. 创建管理员
-docker-compose exec backend python manage.py createsuperuser
-
-# 6. 访问
-# 前端: http://localhost
-# 后端 API: http://localhost/api
-# Admin: http://localhost/admin
-```
-
-### 生产部署
-
-```bash
-# 1. 配置环境变量
-export DOMAIN=yourdomain.com
-export SECRET_KEY=your-secret-key
-
-# 2. 构建并启动
-docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
-
-# 3. 检查状态
-docker-compose ps
-
-# 4. 查看日志
-docker-compose logs -f nginx
-```
-
+- [Simple JWT](https://django-rest-framework-simplejwt.readthedocs.io/)
+- [Celery 文档](https://docs.celeryproject.org/)
